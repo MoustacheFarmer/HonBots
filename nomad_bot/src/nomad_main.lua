@@ -321,11 +321,11 @@ local function HarassHeroExecuteOverride(botBrain)
         local abilDragon = skills.abilW
         local abilBlazing = skills.abilR
         core.FindItems()
-        local itemShroud = core.itemShroud
-        local itemSasuke =  core.itemSasuke
-        local itemImmunity = core.itemImmunity
+        local itemShroud = core.tItems.itemShroud.item
+        local itemSasuke =  core.tItems.itemSasuke.item
+        local itemImmunity = core.tItems.itemImmunity.item
    
-        -- Dragon Fire or Sheep - on unit.
+        --:D
         if not bActionTaken and not bTargetVuln then            
             if itemSheepstick then
                 local nRange = itemSheepstick:GetRange()
