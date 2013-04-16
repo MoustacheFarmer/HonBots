@@ -1,15 +1,23 @@
 -- Nomadbot v0.01
-
+--Created by Shoarmaboer/KapiteinKoektrommel
 --Features TODO
---Implement ulti 
---Implement smart and effective item usage
---Implement factoring in the amount of money we have when running the RetreatToWell util (or implement proper courier usage)
---Balance treshold calculations (as they are now they roughly provide the wanted aggressive behaviour)
---Clean up code and optimize where possible
+--Implement ulti [semi done, only uses it offensively now]
+--Implement smart and effective item usage [marchers, shroud done]
+--Implement factoring in the amount of money we have when running the RetreatToWell util (or implement proper courier usage) [semi done, need to tweak values]
+--Balance nUtil calculations (as they are now they roughly provide the wanted aggressive behaviour)
+--Clean up code and further optimize where possible
 
---Botstate
---Basics work, it can handle chronosbot at mid without using it's ultimate
---Bot can effectivly chase down targets with proper usage of truestrike/miragestrike + sandstorm
+--Fixes/unwanted behaviour TODO
+--Breaks truestrike
+--Runs back to a lane when he regens enough health to trigger the "go back to well behaviour", this is undesirable behaviour
+--Doesn't last hit when he has the opportunity
+--Doesn't pick up runes when he passes them
+--Keeps backpeddling when in front of creep wave and facing enemy creepwave despite sometimes being able to tank the wave with ease
+--
+
+--Current Botstate
+--Basics work, it can handle chronosbot at mid without using it's ultimate (though I'm far from happy with the current state)
+--Bot can effectivly chase down targets with proper usage of truestrike/miragestrike + sandstorm (he has a good "sense" for what ability to use at what time)
 
 --####################################################################
 --####################################################################
@@ -70,9 +78,9 @@ BotEcho(object:GetName()..' loading nomad...')
 ----------------------------------
 --	PositionSelfLogic
 ----------------------------------
-behaviorLib.nHeroInfluencePercent = 0.75
+behaviorLib.nHeroInfluencePercent = 4
 behaviorLib.nCreepPushbackMul = 0.5
-behaviorLib.nTargetPositioningMul = 0.6
+behaviorLib.nTargetPositioningMul = 0.5
 
 --####################################################################
 --####################################################################
@@ -86,11 +94,11 @@ behaviorLib.nTargetPositioningMul = 0.6
 object.heroName = 'Hero_Nomad'
 
 
---   Item Buy order. Internal names  
+-- Item Buy order. Internal names  
 behaviorLib.StartingItems  = { "Item_RunesOfTheBlight", "Item_LoggersHatchet", "Item_IronBuckler"}
 behaviorLib.LaneItems  = {"Item_Marchers"}
-behaviorLib.MidItems  = {"Item_EnhancedMarchers", "Item_Lifetube", "Item_Shield2"}
-behaviorLib.LateItems  = {"Item_Pierce", "Item_Immunity", "Item_Stealth", "Item_Sasuke"}
+behaviorLib.MidItems  = {"Item_EnhancedMarchers", "Item_Lifetube", "Item_Shield2", "Item_MysticVestments"}
+behaviorLib.LateItems  = {"Item_Pierce 3", "Item_Immunity", "Item_Stealth", "Item_Sasuke"}
 
 
 -- Skillbuild table, 0= Sandstorm, 1= Miragestrike fake/real, 2=Wanderer, 3=Counteredge, 4=Attri
@@ -103,29 +111,44 @@ object.tSkills = {
 }
 
 --These are thresholds of aggression the bot must reach to use these abilities
-object.nSandStormTreshold = 60
+object.nOffensiveChaseTreshold = 60
 object.nTruestrikeTreshold = 45
 object.nMiragestrikeTreshold = 25
-object.nShroudTreshold = 0
+object.nShroudTreshold = 30
 object.nImmunityTreshold = 0
 
 -- These are bonus agression points that are applied to the bot upon successfully using a skill/item
-object.nSandStormUse = 20
-object.nMiragestrikeUse = 15
-object.nTruestrikeUse = 35
-object.nCounterEdgeUse = 80
-object.nImmunityUse = 100
-object.nShroudUse = 20
-object.nGenjuroUse = 40
+object.nSandStormUse = 10
+object.nMiragestrikeUse = 5
+object.nTruestrikeUse = 20
+object.nCounterEdgeUse = 15
+object.nImmunityUse = 40
+object.nShroudUse = 15
+object.nGenjuroUse = 20
+
+--Tresholds for using counteredge
+object.nCounterEdgeHealthVelocityTreshold = 0.25
+object.nCounterEdgeRelativeHealthVelocityTreshold = 0.35
+
+--Misc tresholds and factors
+object.nHOTBLAggressionFactor = 0.125
+object.nEnemyLowManaAggressionTreshold = 0.15
+object.nEnemyLowManaAggresionFactor = 0.125
+object.nSelfLowHealthAggressionTreshold = 0.25
+object.nSelfLowHealthAggressionFactor = 0.25
+object.nMaxRetreatToWellSpeedIncreaseActivationDistance = 2000
+object.nSandstormRetreatFromWellHealthTreshold = 0.35
+object.nMinCounterEdgeCooldownConsideration = 30
 
 --We create a table for all the items, to make it more convient to use them later in the code
 --We have an assetName for the ingame name of the item, and an item that references the actual object
---And on a sidenote, I dislike the fact that the assetnames do not always match those of in the actual game....
+--And on a sidenote, I dislike the fact that the assetnames do not always match those of the items in the actual game....
 --BELIEVE IT!
 
 --Assetname for shrunken head is Item_Immunity
 --Assetname for assasin's shroud is Item_Stealth, and genjuro is Item_Sasuke
 object.tItems = {}
+object.tItems["HoTBL"] = {assetName = "Item_Shield2", item = nil}
 object.tItems["Shroud"] = {assetName = "Item_Stealth", item = nil}
 object.tItems["Genjuro"] = {assetName = "Item_Sasuke", item = nil}
 object.tItems["Shrunken"] = {assetName = "Item_Immunity", item = nil}
@@ -175,52 +198,34 @@ end
 -- @param: tGameVariables
 -- @return: none
 
-local nPrevHealthPercent
-local nPrevGameTime = Hon.GetGameTime()
-local nSustainedHealthVelocity
-local nSustainedHealthVelocityDecayRate = 0.685
-
-local nSustainedHealthVelocityTreshold = 3.5
-local nSustainedHealthVelocityTimeTreshold = 1000
-local nSustainedCurrentTime = 0
+local nPrevHealthPercent = 0
 
 function object:onthinkOverride(tGameVariables)
     self:onthinkOld(tGameVariables)
 	
-	local nCurrGameTime = HoN.GetGameTime()
-	local nDeltaTime = nCurrGameTime - nPrevGameTime
-	
+	--Potential estimations for estimating whether to counteredge or not
+	local botBrain = self
 	local unitSelf = self.core.unitSelf
 	local nHealthPercent = unitSelf:GetHealthPercent()
 	local nHealthPercentVelocity = nPrevHealthPercent - nHealthPercent
-	
-	local nSustainedHealthVelocity = nSustainedHealthVelocity + nHealthPercentVelocity
-	nSustainedHealthVelocity = nSustainedHealthVelocity * nSustainedHealthVelocityDecayRate
+	local nRelativeHealthPercentVelocity = nHealthPercentVelocity / nHealthPercent
+
+	--BotEcho(format("Health velocity: %.4f", nHealthPercentVelocity * 100))
+	--BotEcho(format("Relative health velocity: %.4f", nRelativeHealthPercentVelocity * 100))
 	
 	--Activate counteredge when we suddenly detect a huge spike of damage
 	--Health will be lower, thus the theoretical chance of being attacked is higher and counteredge will be more succesful
-	if(nHealthPercentVelocity > 30) then
-		local abilCounterEdge = skills.abilR
-        if abilCounterEdge:CanActivate() then
-			core.OrderAbility(self, abilCounterEdge)
-		end
-	end
-	
-	--Activate counteredge when we detect a steady source of damage 
-	if nSustainedHealthVelocity >= nSustainedHealthVelocityTreshold then
-		if (nSustainedCurrentTime = nSustainedCurrentTime + nDeltaTime) > nSustainedHealthVelocityTimeTreshold then
+	--Sadly we there is no support for tracking incoming spells (just projectiles) at this point of the bot api, so we cannot put that advantage to use
+	if nHealthPercentVelocity > object.nCounterEdgeHealthVelocityTreshold or nRelativeHealthPercentVelocity > object.nCounterEdgeRelativeHealthVelocityTreshold then
+		--local nEnemyHeroes = GetEnemyHeroesInRadius(600)
+		--if nEnemyHeroes > 0 then
 			local abilCounterEdge = skills.abilR
 			if abilCounterEdge:CanActivate() then
-				core.OrderAbility(self, abilCounterEdge)
+				core.OrderAbility(botBrain, abilCounterEdge)
 			end
-		end
-	else then
-		nSustainedCurrentTime = 0
+		--end
 	end
-		
-		
 	nPrevHealthPercent = nHealthPercent
-	nPrevGameTime = nCurrTime
 end
 
 object.onthinkOld = object.onthink
@@ -266,7 +271,7 @@ function object:oncombateventOverride(EventData)
 end
 -- override combat event trigger function.
 object.oncombateventOld = object.oncombatevent
-object.oncombatevent     = object.oncombateventOverride
+object.oncombatevent = object.oncombateventOverride
 
 
 
@@ -278,8 +283,8 @@ object.oncombatevent     = object.oncombateventOverride
 --We use a bit more information to determine our nUtil compared to most other bots
 --We try to express the bots "desire" to harass and kill the enemy hero
 --The easier it is to kill the enemy bot, the higher it's killing intent gets
+--We want the bot to have a proper estimation of what it's capable of given the enemy state and it's own state
 local function CustomHarassUtilityFnOverride(hero)	
-	
 	local nUtil = 0
 	local unitSelf = core.unitSelf
     local nEnemyLevel = hero:GetLevel()
@@ -295,9 +300,10 @@ local function CustomHarassUtilityFnOverride(hero)
 	
 	local nEnemyMaxHealth = hero:GetMaxHealth()
 	local nEnemyHealth = hero:GetHealth()
+	local nEnemyMana = hero:GetMana()
 	local nEnemyArmor = hero:GetArmor()
 	
-	--We couldn't see the enemy, thus we could not retrieve his armor exit the function
+	--We can't see the enemy, thus we cannot not retrieve his armor value (nor any other information at this point), exit the function
 	if nEnemyArmor == nil then
 		return 0
 	end
@@ -305,29 +311,32 @@ local function CustomHarassUtilityFnOverride(hero)
 	local nDamageAverage = core.GetFinalAttackDamageAverage(unitSelf)
 	nDamageAverage = nDamageAverage + GetExtraDamageFromWanderer(nDamageAverage)
 	
-	local armorPenetration = 0;
+	local nArmorPenetration = 0;
 	local itemShieldBreaker = object.tItems["ShieldBreaker"].item
 	
 	--factor in the armor penetration from shieldbreaker
 	if itemShieldBreaker ~= nil then
-		armorPenetration = armorPenetration + itemShieldBreaker:GetLevel() * 2
+		nArmorPenetration = nArmorPenetration + itemShieldBreaker:GetLevel() * 2
 	end
 		
+	local nFinalArmor = nEnemyArmor - nArmorPenetration
 	--calculate how much "real" damage we do on a regular auto attack
-	local nEffectiveAutoAttackDamage = GetEffectivePhysicalDamage(nEnemyArmor - armorPenetration, nDamageAverage)
+	local nEffectiveAutoAttackDamage = GetEffectivePhysicalDamage(nFinalArmor, nDamageAverage)
 	
 	--calculate a damage to maxhealthpool ratio, how much damage can we inflict in regard to the enemies total healthpool?
 	local nEffectiveAutoAttackDamageToMaxHealthRatio = nEffectiveAutoAttackDamage / nEnemyMaxHealth
-	local nHitsRequiredForKill = ceil(nEnemyHealth / nEffectiveAutoAttackDamage)
+	local nHitsRequiredForKill = nEnemyHealth / nEffectiveAutoAttackDamage
+	
+	if nHitsRequiredForKill < 1 then
+		nHitsRequiredForKill = 1
+	end
 	
 	--combine the damage to health ratio and the amounts of hits required to kill the enemy bot
 	local nAutoAttackEffectivenessFactor = nEffectiveAutoAttackDamageToMaxHealthRatio + (1/nHitsRequiredForKill)
-	local nMaxEffectiveAutoAttackDamageUtil = 30
-	local nEffectiveAutoAttackDamageUtil = 10 + (nMaxEffectiveAutoAttackDamageUtil * nAutoAttackEffectivenessFactor)
+	local nMaxEffectiveAutoAttackDamageUtil = 45
+	local nEffectiveAutoAttackDamageUtil = 5 + nMaxEffectiveAutoAttackDamageUtil * nAutoAttackEffectivenessFactor
 	nUtil = nUtil + nEffectiveAutoAttackDamageUtil
 	
-	BotEcho(format("nEffectiveAutoAttackDamageUtil: %.4f", nEffectiveAutoAttackDamageUtil))
-
 	--Nomad's miragestrike versions both work on the same cooldown, so we only need to check one for activation
     if skills.abilW:CanActivate() then
 		--Miragestrike real util
@@ -336,22 +345,45 @@ local function CustomHarassUtilityFnOverride(hero)
 		
 		--Calculate how much effective damage we can deal with our miragestrikereal
 		local nTrueStrikeDamage = 40 + (40 * nStrikeLvl)
-		local nEffectiveTrueStrikeDamage = GetEffectivePhysicalDamage(nEnemyArmor, nDamageAverage + nTrueStrikeDamage)
+		local nEffectiveTrueStrikeDamage = GetEffectivePhysicalDamage(nFinalArmor, nDamageAverage + nTrueStrikeDamage)
 		
 		--Exponential fn to calculate added truestrikeUtil
-		local nEffectiveTrueStrikeDamageToHealthRatio = (nEffectiveTrueStrikeDamage / nEnemyHealth)
-		local nTrueStrikeUtil =  2 ^ (7.5 * (nEffectiveTrueStrikeDamageToHealthRatio + nEffectiveTrueStrikeDamageToHealthRatio))
+		local nEffectiveTrueStrikeDamageToHealthRatio = nEffectiveTrueStrikeDamage / nEnemyHealth
+		local nTrueStrikeUtil =  2 ^ (4.25 * (nEffectiveTrueStrikeDamageToHealthRatio + nEffectiveTrueStrikeDamageToHealthRatio))
 		
 		--Calculate how much effective damage we can deal with our miragestrikefake
 		local nMirageStrikeDamage = 40 + (20 * nStrikeLvl)
-		local nEffectiveMirageStrikeDamage = GetEffectivePhysicalDamage(nEnemyArmor, nDamageAverage + nMirageStrikeDamage)
+		local nEffectiveMirageStrikeDamage = GetEffectivePhysicalDamage(nFinalArmor, nDamageAverage + nMirageStrikeDamage)
 		local nMaxMirageStrikeUtil = 30
-		local nMirageStrikeUtil = nMaxMirageStrikeUtil * (1 + (nEffectiveMirageStrikeDamage / nEnemyMaxHealth))
+		local nMirageStrikeUtil = nMaxMirageStrikeUtil * (nEffectiveMirageStrikeDamage / nEnemyMaxHealth)
 		
 		local nStrikeUtil = nTrueStrikeUtil > nMirageStrikeUtil and nTrueStrikeUtil or nMirageStrikeUtil
 		nUtil  = nUtil + nStrikeUtil
 		BotEcho(format("nMirageStrikeUtil: %.4f :", nMirageStrikeUtil))
     end
+	
+	local itemHoTBL = object.tItems["HoTBL"].item
+	
+	--Make the bot more likely to harass/towerdive when has has a hotbl in his inventory
+	if itemHOTBL then
+		nUtil = nUtil + (nUtil * nHOTBLAggressionFactor)
+	end	
+	
+	--Low mana means the enemy is less likely to stun/snare/root us or deal high damage
+	--Make him a tad more aggressive
+	local nEnemyManaPercent = hero:GetManaPercent()
+	
+	if nEnemyManaPercent < object.nEnemyLowManaAggressionTreshold then
+		nUtil = nUtil + (nUtil * object.nEnemyLowManaAggresionFactor)
+	end
+	
+	nUtil = Clamp(nUtil, 0, 100)
+	
+	--If we are low on health, calm down a bit
+	local nHealthPercent = unitSelf:GetHealthPercent()
+	if nHealthPercent < object.nSelfLowHealthAggressionTreshold then
+		nUtil = nUtil * object.nSelfLowHealthAggressionFactor
+	end
 	
 	BotEcho(format("nUtil: %.4f", nUtil))
 	
@@ -403,10 +435,18 @@ core.FindItems = funcFindItemsOverride
 function HarassHeroExecuteOverride(botBrain)	
 
 	local unitSelf = core.unitSelf
+	local nLastHarassUtility = behaviorLib.lastHarassUtil
+	
+	--When shroud is active, do not activate any abilities but instead try to get a hit in from stealth
+	if unitSelf:HasState("State_Item3G") then
+		return object.harassExecuteOld(botBrain) 
+    end 
 	
 	--Check if nomad is charging at a target with truestrike
+	--This behaviour still breaks when running other excute functions during the charge
+	--We still need to make him tunnelvision but without making him suicide all the time
 	if unitSelf:HasState("State_Nomad_Ability2_Self") then
-		BotEcho("True straking!")
+		BotEcho("True striking!")
 		return 
 	end	
 	
@@ -423,18 +463,18 @@ function HarassHeroExecuteOverride(botBrain)
     local nTargetExtraRange = core.GetExtraRange(unitTarget)
     local nTargetDistanceSq = Vector3.Distance2DSq(vecMyPosition, vecTargetPosition)
   
-    local nLastHarassUtility = behaviorLib.lastHarassUtil
     local bCanSee = core.CanSeeUnit(botBrain, unitTarget)    
     local bActionTaken = false
+	local canSeeUnit = core.CanSeeUnit(botBrain, unitTarget)
 	
 	-- Nomad has two types of strikes one where he sends the illusion and one where he dashes in himself	
 	if not bActionTaken then
-		if core.CanSeeUnit(botBrain, unitTarget) then
+		if canSeeUnit then
 			local abilTrueStrike = skills.abilW
-			if abilTrueStrike:CanActivate() and nLastHarassUtility >= botBrain.nTruestrikeTreshold then
+			if abilTrueStrike:CanActivate() and nLastHarassUtility >= object.nTruestrikeTreshold then
 				local nRange = abilTrueStrike:GetRange()
 					if nTargetDistanceSq < (nRange * nRange) then
-						BotEcho("Casting truestrike(real)")
+						BotEcho("Casting truestrike")
 						bActionTaken = core.OrderAbilityEntity(botBrain, abilTrueStrike, unitTarget)
 					end
 			end
@@ -443,23 +483,38 @@ function HarassHeroExecuteOverride(botBrain)
 	
 	--We activate sandstorm/ghostmarchers for chasing purposes, vroom vroom
 	if not bActionTaken then
-		--Activate ghost marchers if we can
-		local itemGhostMarchers = core.itemGhostMarchers
-		if itemGhostMarchers:CanActivate() then
-			core.OrderItemClamp(botBrain, core.unitSelf, itemGhostMarchers)
+		if nLastHarassUtility >= object.nOffensiveChaseTreshold  then
+			--Activate ghost marchers if we can
+			local itemGhostMarchers = core.itemGhostMarchers
+			if itemGhostMarchers ~= nil then
+				if itemGhostMarchers:CanActivate() then
+					core.OrderItemClamp(botBrain, unitSelf, itemGhostMarchers)
+				end
+			end
+			
+			--Cast sandstorm if we can (http://vocaroo.com/i/s1oychxZEv4x glorius custom sfx)
+			local abilSandstorm = skills.abilQ
+			if abilSandstorm:CanActivate() then
+				bActionTaken = core.OrderAbility(botBrain, abilSandstorm)
+			end
 		end
-		
-		--Cast sandstorm if we can
-		local abilSandstorm = skills.abilQ
-        if abilSandstorm:CanActivate() and nLastHarassUtility > botBrain.nSandstormTreshold then
-			bActionTaken = core.OrderAbility(botBrain, abilSandstorm)
-        end
     end 
+	
+	if not bActionTaken then
+		if nLastHarassUtility >= botBrain.nShroudTreshold then
+		local itemShroud = object.tItems["Shroud"].item
+			if itemShroud then
+				if itemShroud:CanActivate() then
+					bActionTaken = core.OrderItemClamp(botBrain, unitSelf, itemShroud)
+				end
+			end
+		end
+	end
 		
 	if not bActionTaken then	
-		if core.CanSeeUnit(botBrain, unitTarget) then
+		if canSeeUnit then
 			local abilMirage = skills.abilE
-			if abilMirage:CanActivate() and nLastHarassUtility >= botBrain.nMiragestrikeTreshold then
+			if abilMirage:CanActivate() and nLastHarassUtility >= object.nMiragestrikeTreshold then
 				local nRange = abilMirage:GetRange()
 				if nTargetDistanceSq < (nRange * nRange) then
 					BotEcho("Casting Miragestrike")
@@ -474,8 +529,6 @@ function HarassHeroExecuteOverride(botBrain)
     end 
 end
 
-
-
 -- overload the behaviour stock function with custom 
 object.harassExecuteOld = behaviorLib.HarassHeroBehavior["Execute"]
 behaviorLib.HarassHeroBehavior["Execute"] = HarassHeroExecuteOverride
@@ -485,7 +538,9 @@ function behaviorLib.GetCreepAttackTarget(botBrain, unitEnemyCreep, unitAllyCree
 	local bDebugEchos = false
 	-- no predictive last hitting, just wait and react when they have 1 hit left
 	-- prefers LH over deny
-
+	local unitSelf = core.unitSelf
+	local vecMyPos = unitSelf:GetPosition()
+	
 	local nDamageAverage = core.GetFinalAttackDamageAverage(core.unitSelf)
 	nDamageAverage = nDamageAverage + GetExtraDamageFromWanderer(nDamageAverage)
 	
@@ -497,26 +552,22 @@ function behaviorLib.GetCreepAttackTarget(botBrain, unitEnemyCreep, unitAllyCree
 		local nTargetHealth = unitEnemyCreep:GetHealth()
 		local nTargetArmor = unitEnemyCreep:GetArmor()
 		
-		local armorPenetration = 0;
+		local nArmorPenetration = 0;
 		local itemShieldBreaker = object.tItems["ShieldBreaker"].item
 		
 		if itemShieldBreaker ~= nil then
-			armorPenetration = armorPenetration + itemShieldBreaker:GetLevel() * 2
+			nArmorPenetration = nArmorPenetration + itemShieldBreaker:GetLevel() * 2
 		end
 		
-
-		local nEffectiveDamageAverage = GetEffectivePhysicalDamage(nTargetArmor - armorPenetration, nDamageAverage)
+		local nFinalArmor = nTargetArmor - nArmorPenetration
+		
+		local nEffectiveDamageAverage = GetEffectivePhysicalDamage(nFinalArmor, nDamageAverage)
 		
 		--BotEcho(format("Effective Damage: %.2f", nEffectiveDamageAverage))
 		--BotEcho(format("Creep health: %.2f", nTargetHealth))
 		
 		if nEffectiveDamageAverage >= nTargetHealth then
 			local bActuallyLH = true
-			
-			-- [Tutorial] Make DS not mess with your last hitting before shit gets real
-			if core.bIsTutorial and core.bTutorialBehaviorReset == false and core.unitSelf:GetTypeName() == "Hero_Shaman" then
-				bActuallyLH = false
-			end
 			
 			if bActuallyLH then
 				if bDebugEchos then BotEcho("Returning an enemy") end
@@ -538,11 +589,6 @@ function behaviorLib.GetCreepAttackTarget(botBrain, unitEnemyCreep, unitAllyCree
 				bActuallyDeny = false
 			end			
 			
-			-- [Tutorial] Hellbourne *will* deny creeps after shit gets real
-			if core.bIsTutorial and core.bTutorialBehaviorReset == true and core.myTeam == HoN.GetHellbourneTeam() then
-				bActuallyDeny = true
-			end
-			
 			if bActuallyDeny then
 				if bDebugEchos then BotEcho("Returning an ally") end
 				return unitAllyCreep
@@ -558,14 +604,15 @@ function behaviorLib.RetreatFromThreatExecuteOverride(botBrain)
     local unitTarget = behaviorLib.heroTarget
 	
 	--Cast miragestrike at enemy hero when we are retreating from threat
-	--Functions needs to be partially reworked due harass/mana considerations
-	if unitTarget ~= nil then
+	--Function might need to be partially reworked due harass/mana considerations
 	local unitSelf = core.unitSelf
+		
+	if unitTarget then
 	local vecTargetPosition = unitTarget:GetPosition()
 	local vecMyPosition = unitSelf:GetPosition()
 		if core.CanSeeUnit(botBrain, unitTarget) then
 			local abilMirageStrike = skills.abilE
-			if abilMirageFake:CanActivate() then
+			if abilMirageStrike:CanActivate() then
 				local nRange = abilMirageStrike:GetRange()
 				local nTargetDistanceSq = Vector3.Distance2DSq(vecMyPosition, vecTargetPosition)
 				if nTargetDistanceSq < (nRange * nRange) then
@@ -575,17 +622,27 @@ function behaviorLib.RetreatFromThreatExecuteOverride(botBrain)
 			end
 		end
 	end
-		
-		
+	
+	local nHealthPercentage = unitSelf:GetHealthPercent()
 	--Activate ghost marchers if we can
 	local itemGhostMarchers = core.itemGhostMarchers
-	if behaviorLib.lastRetreatUtil >= behaviorLib.retreatGhostMarchersThreshold and itemGhostMarchers and itemGhostMarchers:CanActivate() then
-		core.OrderItemClamp(botBrain, core.unitSelf, itemGhostMarchers)
-		return
+	if itemGhostMarchers then
+		if behaviorLib.lastRetreatUtil >= behaviorLib.retreatGhostMarchersThreshold and itemGhostMarchers:CanActivate() then
+			core.OrderItemClamp(botBrain, unitSelf, itemGhostMarchers)
+			return
+		end
+	end
+	
+	local abilSandstorm = skills.abilQ
+	local nHealthPercent = unitSelf:GetHealthPercent()
+
+	if abilSandstorm:CanActivate() and  nHealthPercent <= object.nSandstormRetreatFromWellHealthTreshold then -- and GetEnemyHeroes(600) > 0 
+		BotEcho("Retreating, activating sandstorm because it's up and we are low on health")
+		core.OrderAbility(botBrain, abilSandstorm)
 	end
 	
 	local vecPos = behaviorLib.PositionSelfBackUp()
-	core.OrderMoveToPosClamp(botBrain, core.unitSelf, vecPos, false)
+	core.OrderMoveToPosClamp(botBrain, unitSelf, vecPos, false)
 end
 
 object.RetreatFromThreatExecuteOld = behaviorLib.RetreatFromThreatBehavior["Execute"]
@@ -593,25 +650,62 @@ behaviorLib.RetreatFromThreatBehavior["Execute"] = behaviorLib.RetreatFromThreat
 
 function behaviorLib.HealAtWellExecuteOverride(botBrain)
 	local wellPos = core.allyWell and core.allyWell:GetPosition() or behaviorLib.PositionSelfBackUp()
+	local unitSelf = core.unitSelf
+	
+	--Bot uses the abilities while he is in the well, which is undesirable behaviour due to causing unneccesary cooldowns
+	local vecMyPosition = unitSelf:GetPosition()
+	local nDistanceToWell = Vector3.Distance2DSq(vecMyPosition, wellPos)
+	local bWithinUseDistance = nDistanceToWell > object.nMaxRetreatToWellSpeedIncreaseActivationDistance * object.nMaxRetreatToWellSpeedIncreaseActivationDistance 
 	
 	--Activate ghostmarchers when retreating to the well, to minimize bot downtime
 	local itemGhostMarchers = core.itemGhostMarchers
-	if itemGhostMarchers and itemGhostMarchers:CanActivate() then
-		core.OrderItemClamp(botBrain, core.unitSelf, itemGhostMarchers)
+	if itemGhostMarchers then
+		if itemGhostMarchers:CanActivate() and bWithinUseDistance then
+			core.OrderItemClamp(botBrain, core.unitSelf, itemGhostMarchers)
+		end
 	end
 	
-	--Cast sandstorm when retreating to the well, to minimize bot downtime
-	local abilSandstorm = skills.abilQ
-	if abilSandstorm:CanActivate() then
+	--Cast sandstorm when retreating to the well, to minimize bot downtime (http://vocaroo.com/i/s1oychxZEv4x huehuehue)
+	local abilSandstorm = skills.abilQ	
+	if abilSandstorm:CanActivate() and bWithinUseDistance then
 		BotEcho("Retreating to well, activating sandstorm because it's up")
 		core.OrderAbility(botBrain, abilSandstorm)
 	end
 	
-	core.OrderMoveToPosAndHoldClamp(botBrain, core.unitSelf, wellPos, false)
+	core.OrderMoveToPosAndHoldClamp(botBrain, unitSelf, wellPos, false)
 end
 
-object.HealAtWellExecuteOld = behaviorLib.HealAtWellBehavior["Execute"]
+object.HealAtWellBehaviorExecuteOld = behaviorLib.HealAtWellBehavior["Execute"]
 behaviorLib.HealAtWellBehavior["Execute"] = behaviorLib.HealAtWellExecuteOverride
+
+--Override the healatwell utility to factor in amount of gold on the bot, I consider 2000 gold an amount that's not too low nor too high to use as base
+function behaviorLib.HealAtWellUtilityOverride(botBrain)
+	local nUtil = 0
+	local hpPercent = core.unitSelf:GetHealthPercent()
+
+	if hpPercent < 0.95 then
+		local wellPos = core.allyWell and core.allyWell:GetPosition() or Vector3.Create()
+		local nDist = Vector3.Distance2D(wellPos, core.unitSelf:GetPosition())
+
+		nUtil = behaviorLib.WellHealthUtility(hpPercent) + behaviorLib.WellProximityUtility(nDist)
+	end
+
+	if botBrain.bDebugUtility == true and nUtil ~= 0 then
+		BotEcho(format("  HealAtWellUtility: %g", nUtil))
+	end
+	
+	local nGold = botBrain:GetGold()
+	local nGoldUtil = 25 *(nGold/2000)
+	
+	nUtil = nUtil + nGoldUtil
+	
+	BotEcho(format("  HealAtWellUtility: %g", nUtil))
+	
+	return nUtil
+end
+
+object.HealAtWellUtilityOld = behaviorLib.HealAtWellBehavior["Utility"] 
+behaviorLib.HealAtWellBehavior["Utility"] = behaviorLib.HealAtWellUtilityOverride
 
 --------------------------------------------------------------
 --                     Helper functions                     --
@@ -623,7 +717,7 @@ function GetExtraDamageFromWanderer(nDamage)
 	local nWandererCharges = abilWanderer:GetCharges()
 	local nWandererMaxCharges = abilWanderer:GetMaxCharges()
 	
-	--Have we leveled wanderer and all and do we have the minimum amount of charges to apply the extra damage?
+	--Have we leveled wanderer and do we have the minimum amount of charges to apply the extra damage?
 	if nWandererLvl > 0 and nWandererCharges >= 25 then
 		--Determine the max added crit damage
 		local nWandererDamageMulti = 0.2 + nWandererLvl * 0.2
@@ -634,6 +728,42 @@ function GetExtraDamageFromWanderer(nDamage)
 end
 
 function GetEffectivePhysicalDamage(nArmor, nDamage)
+	--Armor damage reduction formula
 	local nDamageReductionBonus = (nArmor*0.06)/(1+(0.06 * nArmor))
 	return nDamage - (nDamageReductionBonus * nDamage)
+end
+
+function ConserveManaForCounterEdge(mana)
+	local unitSelf = self.core.unitSelf
+	local nLevel = unitSelf:GetLevel()
+	
+	if nLevel < 6 then
+		return false
+	end
+	
+	local abilCounterEdge = skills.abilR
+	local nCounterEdgeManacost = abilCounterEdge:GetManaCost()	
+	if mana - nCounterEdgeManaCost < 0 then
+		local nCoolDown = abilCounterEdge:GetCooldown()
+		if nCoolDown < object.nMinCounterEdgeCooldownConsideration then
+			return true
+		end
+	end
+	
+	return false
+end
+
+function GetEnemyHeroesInRadius(nRadius)
+	local unitSelf = core.unitSelf
+	local vecMyPos = unitSelf:GetPosition()
+	local tUnits = HoN.GetUnitsInRadius(vecMyPos, nRadius, core.UNIT_MASK_HERO)
+	
+	local nHeroCount = 0
+	for k, v in pairs(tUnits) do
+		if v:IsHero() and v:GetTeam() ~= unitSelf:GetTeam() then
+			nHeroCount = nHeroCount + 1
+		end
+	end
+	
+	return nHeroCount
 end
