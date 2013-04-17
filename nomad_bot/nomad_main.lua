@@ -1,7 +1,7 @@
 -- Nomadbot v0.01
 --Created by Shoarmaboer/KapiteinKoektrommel
 --Features TODO
---Implement ulti [semi done, only uses it offensively now]
+--Implement ulti [semi done, only uses it defensively now]
 --Implement smart and effective item usage [marchers, shroud done]
 --Implement factoring in the amount of money we have when running the RetreatToWell util (or implement proper courier usage) [semi done, need to tweak values]
 --Balance nUtil calculations (as they are now they roughly provide the wanted aggressive behaviour)
@@ -13,7 +13,6 @@
 --Doesn't last hit when he has the opportunity
 --Doesn't pick up runes when he passes them
 --Keeps backpeddling when in front of creep wave and facing enemy creepwave despite sometimes being able to tank the wave with ease
---
 
 --Current Botstate
 --Basics work, it can handle chronosbot at mid without using it's ultimate (though I'm far from happy with the current state)
@@ -216,14 +215,22 @@ function object:onthinkOverride(tGameVariables)
 	--Activate counteredge when we suddenly detect a huge spike of damage
 	--Health will be lower, thus the theoretical chance of being attacked is higher and counteredge will be more succesful
 	--Sadly we there is no support for tracking incoming spells (just projectiles) at this point of the bot api, so we cannot put that advantage to use
+	
+	local abilCounterEdge = skills.abilR
+	if abilCounterEdge:CanActivate() then
+		local nEnemyHeroes = GetEnemyHeroesInRadius(600)
+		if nEnemyHeroes >= 2 then
+			core.OrderAbility(botBrain, abilCounterEdge)
+		end
+	end
+	
 	if nHealthPercentVelocity > object.nCounterEdgeHealthVelocityTreshold or nRelativeHealthPercentVelocity > object.nCounterEdgeRelativeHealthVelocityTreshold then
-		--local nEnemyHeroes = GetEnemyHeroesInRadius(600)
-		--if nEnemyHeroes > 0 then
-			local abilCounterEdge = skills.abilR
+		local nEnemyHeroes = GetEnemyHeroesInRadius(600)
+		if nEnemyHeroes > 0 then
 			if abilCounterEdge:CanActivate() then
 				core.OrderAbility(botBrain, abilCounterEdge)
 			end
-		--end
+		end
 	end
 	nPrevHealthPercent = nHealthPercent
 end
@@ -333,7 +340,7 @@ local function CustomHarassUtilityFnOverride(hero)
 	
 	--combine the damage to health ratio and the amounts of hits required to kill the enemy bot
 	local nAutoAttackEffectivenessFactor = nEffectiveAutoAttackDamageToMaxHealthRatio + (1/nHitsRequiredForKill)
-	local nMaxEffectiveAutoAttackDamageUtil = 45
+	local nMaxEffectiveAutoAttackDamageUtil = 55
 	local nEffectiveAutoAttackDamageUtil = 5 + nMaxEffectiveAutoAttackDamageUtil * nAutoAttackEffectivenessFactor
 	nUtil = nUtil + nEffectiveAutoAttackDamageUtil
 	
@@ -636,7 +643,8 @@ function behaviorLib.RetreatFromThreatExecuteOverride(botBrain)
 	local abilSandstorm = skills.abilQ
 	local nHealthPercent = unitSelf:GetHealthPercent()
 
-	if abilSandstorm:CanActivate() and  nHealthPercent <= object.nSandstormRetreatFromWellHealthTreshold then -- and GetEnemyHeroes(600) > 0 
+	local nEnemyHeroes = GetEnemyHeroesInRadius(600)
+	if abilSandstorm:CanActivate() and  nHealthPercent <= object.nSandstormRetreatFromWellHealthTreshold  and nEnemyHeroes > 0 then -- and GetEnemyHeroes(600) > 0 
 		BotEcho("Retreating, activating sandstorm because it's up and we are low on health")
 		core.OrderAbility(botBrain, abilSandstorm)
 	end
@@ -699,7 +707,7 @@ function behaviorLib.HealAtWellUtilityOverride(botBrain)
 	
 	nUtil = nUtil + nGoldUtil
 	
-	BotEcho(format("  HealAtWellUtility: %g", nUtil))
+	--BotEcho(format("  HealAtWellUtility: %g", nUtil))
 	
 	return nUtil
 end
@@ -756,11 +764,12 @@ end
 function GetEnemyHeroesInRadius(nRadius)
 	local unitSelf = core.unitSelf
 	local vecMyPos = unitSelf:GetPosition()
-	local tUnits = HoN.GetUnitsInRadius(vecMyPos, nRadius, core.UNIT_MASK_HERO)
+	local tUnits = HoN.GetUnitsInRadius(vecMyPos, nRadius, core.UNIT_MASK_ALIVE + core.UNIT_MASK_UNIT + core.UNIT_MASK_HERO)
 	
 	local nHeroCount = 0
-	for k, v in pairs(tUnits) do
-		if v:IsHero() and v:GetTeam() ~= unitSelf:GetTeam() then
+	for key, val in pairs(tUnits) do
+		if val ~= unitSelf and val:IsHero() and val:GetTeam() ~= unitSelf:GetTeam() then
+			--BotEcho("Enemy hero within vicinity")
 			nHeroCount = nHeroCount + 1
 		end
 	end
